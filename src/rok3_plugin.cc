@@ -381,6 +381,7 @@ void Practice()
     CIE = jointToRotMat(q);
     euler = rotToEuler(CIE) * rad2deg;
     
+    
     std::cout << "Hello World!" << std::endl;
     std::cout << "TI0 = " << TI0 << std::endl;
     std::cout << "T01 = " << T01 << std::endl;
