@@ -462,6 +462,24 @@ void gazebo::rok3_plugin::UpdateAlgorithm()
     //* Read Sensors data
     GetjointData();
     
+    //* Target Angles (Trajectories)
+    /*
+     enum
+        {
+            WST = 0, LHY, LHR, LHP, LKN, LAP, LAR, RHY, RHR, RHP, RKN, RAP, RAR
+        };
+     */
+    joint[LHY].targetRadian = 10*3.14/180;
+    joint[LHR].targetRadian = 20*3.14/180;
+    joint[LHP].targetRadian = 30*3.14/180;
+    joint[LKN].targetRadian = 40*3.14/180;
+    joint[LAP].targetRadian = 50*3.14/180;
+    joint[LAR].targetRadian = 60*3.14/180;
+    
+    
+    
+    
+    
     //* Joint Controller
     jointController();
 }
