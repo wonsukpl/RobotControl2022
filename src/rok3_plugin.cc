@@ -348,6 +348,242 @@ VectorXd rotToEuler(MatrixXd rotMat)
     return tmp_v;
 }
 
+// 220502 practice: Geometric Jacobian Programming
+MatrixXd jointToPosJac(VectorXd q)
+{
+    // Input: vector of generalized coordinates (joint angles)
+    // Output: J_P, Jacobian of the end-effector translation which maps joint velocities to end-effector linear velocities in I frame.
+    MatrixXd J_P = MatrixXd::Zero(3,6);
+    MatrixXd T_I0(4,4), T_01(4,4), T_12(4,4), T_23(4,4), T_34(4,4), T_45(4,4), T_56(4,4), T_6E(4,4);
+    MatrixXd T_I1(4,4), T_I2(4,4), T_I3(4,4), T_I4(4,4), T_I5(4,4), T_I6(4,4);
+    MatrixXd T_IE(4,4);
+    MatrixXd R_I1(3,3), R_I2(3,3), R_I3(3,3), R_I4(3,3), R_I5(3,3), R_I6(3,3);
+    VectorXd r_I_I1(3), r_I_I2(3), r_I_I3(3), r_I_I4(3), r_I_I5(3), r_I_I6(3);
+    VectorXd n_1(3), n_2(3), n_3(3), n_4(3), n_5(3), n_6(3);
+    VectorXd n_I_1(3),n_I_2(3),n_I_3(3),n_I_4(3),n_I_5(3),n_I_6(3);
+    VectorXd r_I_IE(3);
+
+
+    //* Compute the relative homogeneous transformation matrices.
+    T_I0 = getTransformI0();
+    T_01 = jointToTransform01(q);
+    T_12 = jointToTransform12(q);
+    T_23 = jointToTransform23(q);
+    T_34 = jointToTransform34(q);
+    T_45 = jointToTransform45(q);
+    T_56 = jointToTransform56(q);
+    T_6E = getTransform6E();
+       
+
+    //* Compute the homogeneous transformation matrices from frame k to the inertial frame I.
+    T_I1 = T_I0 * T_01;
+    T_I2 = T_I1 * T_12;
+    T_I3 = T_I2 * T_23;
+    T_I4 = T_I3 * T_34;
+    T_I5 = T_I4 * T_45;
+    T_I6 = T_I5 * T_56;
+    
+    T_IE = T_I6 * T_6E;
+
+    //* Extract the rotation matrices from each homogeneous transformation matrix. Use sub-matrix of EIGEN. https://eigen.tuxfamily.org/dox/group__QuickRefPage.html
+    R_I1 = T_I1.block(0,0,3,3);
+    R_I2 = T_I2.block(0,0,3,3);
+    R_I3 = T_I3.block(0,0,3,3);
+    R_I4 = T_I4.block(0,0,3,3);
+    R_I5 = T_I5.block(0,0,3,3);
+    R_I6 = T_I6.block(0,0,3,3);
+
+    //* Extract the position vectors from each homogeneous transformation matrix. Use sub-matrix of EIGEN.
+    r_I_I1 = T_I1.block(0,3,3,1);
+    r_I_I2 = T_I2.block(0,3,3,1);
+    r_I_I3 = T_I3.block(0,3,3,1);
+    r_I_I4 = T_I4.block(0,3,3,1);
+    r_I_I5 = T_I5.block(0,3,3,1);
+    r_I_I6 = T_I6.block(0,3,3,1);
+
+    //* Define the unit vectors around which each link rotate in the precedent coordinate frame.
+    n_1 << 0,0,1;
+    n_2 << 1,0,0;
+    n_3 << 0,1,0;
+    n_4 << 0,1,0;
+    n_5 << 0,1,0;
+    n_6 << 1,0,0;
+
+    //* Compute the unit vectors for the inertial frame I.
+    n_I_1 = R_I1 * n_1;
+    n_I_2 = R_I2 * n_2;
+    n_I_3 = R_I3 * n_3;
+    n_I_4 = R_I4 * n_4;
+    n_I_5 = R_I5 * n_5;
+    n_I_6 = R_I6 * n_6;
+
+    //* Compute the end-effector position vector.
+    r_I_IE = T_IE.block(0,3,3,1);
+
+
+    //* Compute the translational Jacobian. Use cross of EIGEN.
+    
+    //std::cout << (r_I_IE-r_I_I1) << std::endl;
+    //std::cout << n_I_1 << std::endl;
+    
+    
+    // The important point is that cross func should be used for vector3d, not vectorxd.
+    // (the Eigen lib don't use static_cast..just my opinion.)
+    
+    Vector3d rI1E = r_I_IE-r_I_I1;
+    Vector3d rI2E = r_I_IE-r_I_I2;
+    Vector3d rI3E = r_I_IE-r_I_I3;
+    Vector3d rI4E = r_I_IE-r_I_I4;
+    Vector3d rI5E = r_I_IE-r_I_I5;
+    Vector3d rI6E = r_I_IE-r_I_I6;
+    
+    Vector3d nI1 = n_I_1;
+    Vector3d nI2 = n_I_2;
+    Vector3d nI3 = n_I_3;
+    Vector3d nI4 = n_I_4;
+    Vector3d nI5 = n_I_5;
+    Vector3d nI6 = n_I_6;
+    
+    //std::cout << nI1.cross(rI11) << std::endl;
+    
+    //std::cout << nI1.cross(rI1E) << std::endl;
+    J_P.col(0) << nI1.cross(rI1E);
+    J_P.col(1) << nI2.cross(rI2E);
+    J_P.col(2) << nI3.cross(rI3E);
+    J_P.col(3) << nI4.cross(rI4E);
+    J_P.col(4) << nI5.cross(rI5E);
+    J_P.col(5) << nI6.cross(rI6E);
+    
+    /*
+    J_P.col(0) << n_I_1.cross(r_I_IE-r_I_I1);
+    J_P.col(1) << n_I_2.cross(r_I_IE-r_I_I2);
+    J_P.col(2) << n_I_3.cross(r_I_IE-r_I_I3);
+    J_P.col(3) << n_I_4.cross(r_I_IE-r_I_I4);
+    J_P.col(4) << n_I_5.cross(r_I_IE-r_I_I5);
+    J_P.col(5) << n_I_6.cross(r_I_IE-r_I_I6);
+    */
+    
+    std::cout << "Test, JP:" << std::endl << J_P << std::endl;
+
+    return J_P;
+}
+
+MatrixXd jointToRotJac(VectorXd q)
+{
+    // Input: vector of generalized coordinates (joint angles)
+    // Output: J_P, Jacobian of the end-effector translation which maps joint velocities to end-effector linear velocities in I frame.
+    MatrixXd J_R = MatrixXd::Zero(3,6);
+    MatrixXd T_I0(4,4), T_01(4,4), T_12(4,4), T_23(4,4), T_34(4,4), T_45(4,4), T_56(4,4), T_6E(4,4);
+    MatrixXd T_I1(4,4), T_I2(4,4), T_I3(4,4), T_I4(4,4), T_I5(4,4), T_I6(4,4);
+    MatrixXd T_IE(4,4);
+    MatrixXd R_I1(3,3), R_I2(3,3), R_I3(3,3), R_I4(3,3), R_I5(3,3), R_I6(3,3);
+    VectorXd r_I_I1(3), r_I_I2(3), r_I_I3(3), r_I_I4(3), r_I_I5(3), r_I_I6(3);
+    VectorXd n_1(3), n_2(3), n_3(3), n_4(3), n_5(3), n_6(3);
+    VectorXd n_I_1(3),n_I_2(3),n_I_3(3),n_I_4(3),n_I_5(3),n_I_6(3);
+    VectorXd r_I_IE(3);
+
+
+    //* Compute the relative homogeneous transformation matrices.
+    T_I0 = getTransformI0();
+    T_01 = jointToTransform01(q);
+    T_12 = jointToTransform12(q);
+    T_23 = jointToTransform23(q);
+    T_34 = jointToTransform34(q);
+    T_45 = jointToTransform45(q);
+    T_56 = jointToTransform56(q);
+    T_6E = getTransform6E();
+       
+
+    //* Compute the homogeneous transformation matrices from frame k to the inertial frame I.
+    T_I1 = T_I0 * T_01;
+    T_I2 = T_I1 * T_12;
+    T_I3 = T_I2 * T_23;
+    T_I4 = T_I3 * T_34;
+    T_I5 = T_I4 * T_45;
+    T_I6 = T_I5 * T_56;
+    
+    T_IE = T_I6 * T_6E;
+
+    //* Extract the rotation matrices from each homogeneous transformation matrix. Use sub-matrix of EIGEN. https://eigen.tuxfamily.org/dox/group__QuickRefPage.html
+    R_I1 = T_I1.block(0,0,3,3);
+    R_I2 = T_I2.block(0,0,3,3);
+    R_I3 = T_I3.block(0,0,3,3);
+    R_I4 = T_I4.block(0,0,3,3);
+    R_I5 = T_I5.block(0,0,3,3);
+    R_I6 = T_I6.block(0,0,3,3);
+
+    //* Extract the position vectors from each homogeneous transformation matrix. Use sub-matrix of EIGEN.
+    r_I_I1 = T_I1.block(0,3,3,1);
+    r_I_I2 = T_I2.block(0,3,3,1);
+    r_I_I3 = T_I3.block(0,3,3,1);
+    r_I_I4 = T_I4.block(0,3,3,1);
+    r_I_I5 = T_I5.block(0,3,3,1);
+    r_I_I6 = T_I6.block(0,3,3,1);
+
+    //* Define the unit vectors around which each link rotate in the precedent coordinate frame.
+    n_1 << 0,0,1;
+    n_2 << 1,0,0;
+    n_3 << 0,1,0;
+    n_4 << 0,1,0;
+    n_5 << 0,1,0;
+    n_6 << 1,0,0;
+
+    //* Compute the unit vectors for the inertial frame I.
+    n_I_1 = R_I1 * n_1;
+    n_I_2 = R_I2 * n_2;
+    n_I_3 = R_I3 * n_3;
+    n_I_4 = R_I4 * n_4;
+    n_I_5 = R_I5 * n_5;
+    n_I_6 = R_I6 * n_6;
+
+    //* Compute the end-effector position vector.
+    r_I_IE = T_IE.block(0,3,3,1);
+
+
+    //* Compute the translational Jacobian. Use cross of EIGEN.
+    
+    //std::cout << (r_I_IE-r_I_I1) << std::endl;
+    //std::cout << n_I_1 << std::endl;
+    
+    Vector3d rI1E = r_I_IE-r_I_I1;
+    Vector3d rI2E = r_I_IE-r_I_I2;
+    Vector3d rI3E = r_I_IE-r_I_I3;
+    Vector3d rI4E = r_I_IE-r_I_I4;
+    Vector3d rI5E = r_I_IE-r_I_I5;
+    Vector3d rI6E = r_I_IE-r_I_I6;
+    
+    Vector3d nI1 = n_I_1;
+    Vector3d nI2 = n_I_2;
+    Vector3d nI3 = n_I_3;
+    Vector3d nI4 = n_I_4;
+    Vector3d nI5 = n_I_5;
+    Vector3d nI6 = n_I_6;
+    
+    //std::cout << nI1.cross(rI11) << std::endl;
+    
+    //std::cout << nI1.cross(rI1E) << std::endl;
+    J_R.col(0) << nI1;
+    J_R.col(1) << nI2;
+    J_R.col(2) << nI3;
+    J_R.col(3) << nI4;
+    J_R.col(4) << nI5;
+    J_R.col(5) << nI6;
+    
+    /*
+    J_P.col(0) << n_I_1.cross(r_I_IE-r_I_I1);
+    J_P.col(1) << n_I_2.cross(r_I_IE-r_I_I2);
+    J_P.col(2) << n_I_3.cross(r_I_IE-r_I_I3);
+    J_P.col(3) << n_I_4.cross(r_I_IE-r_I_I4);
+    J_P.col(4) << n_I_5.cross(r_I_IE-r_I_I5);
+    J_P.col(5) << n_I_6.cross(r_I_IE-r_I_I6);
+    */
+    
+    std::cout << "Test, JR:" << std::endl << J_R << std::endl;
+
+    return J_R;
+}
+
+
 
 //* Preparing RobotControl Practice
 void Practice()
@@ -438,7 +674,16 @@ void gazebo::rok3_plugin::Load(physics::ModelPtr _model, sdf::ElementPtr /*_sdf*
     update_connection = event::Events::ConnectWorldUpdateBegin(boost::bind(&rok3_plugin::UpdateAlgorithm, this));
     
     
-    Practice();
+    //Practice();
+    
+    VectorXd q(6);
+    //
+    double deg2rad = PI / 180;
+    double rad2deg = 180 / PI;
+    q << 10*deg2rad, 20*deg2rad, 30*deg2rad, 40*deg2rad, 50*deg2rad, 60*deg2rad;
+    
+    jointToPosJac(q);
+    jointToRotJac(q);
 
 }
 
