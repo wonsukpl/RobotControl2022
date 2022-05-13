@@ -463,7 +463,7 @@ MatrixXd jointToPosJac(VectorXd q)
     J_P.col(5) << n_I_6.cross(r_I_IE-r_I_I6);
     */
     
-    std::cout << "Test, JP:" << std::endl << J_P << std::endl;
+    //std::cout << "Test, JP:" << std::endl << J_P << std::endl;
 
     return J_P;
 }
@@ -479,7 +479,9 @@ MatrixXd jointToRotJac(VectorXd q)
     MatrixXd R_I1(3,3), R_I2(3,3), R_I3(3,3), R_I4(3,3), R_I5(3,3), R_I6(3,3);
     VectorXd r_I_I1(3), r_I_I2(3), r_I_I3(3), r_I_I4(3), r_I_I5(3), r_I_I6(3);
     VectorXd n_1(3), n_2(3), n_3(3), n_4(3), n_5(3), n_6(3);
-    VectorXd n_I_1(3),n_I_2(3),n_I_3(3),n_I_4(3),n_I_5(3),n_I_6(3);
+    //VectorXd n_I_1(3),n_I_2(3),n_I_3(3),n_I_4(3),n_I_5(3),n_I_6(3);
+    Vector3d n_I_1,n_I_2,n_I_3,n_I_4,n_I_5,n_I_6;
+    
     VectorXd r_I_IE(3);
 
 
@@ -552,22 +554,23 @@ MatrixXd jointToRotJac(VectorXd q)
     Vector3d rI5E = r_I_IE-r_I_I5;
     Vector3d rI6E = r_I_IE-r_I_I6;
     
-    Vector3d nI1 = n_I_1;
+    /*Vector3d nI1 = n_I_1;
     Vector3d nI2 = n_I_2;
     Vector3d nI3 = n_I_3;
     Vector3d nI4 = n_I_4;
     Vector3d nI5 = n_I_5;
     Vector3d nI6 = n_I_6;
+    */
     
     //std::cout << nI1.cross(rI11) << std::endl;
     
     //std::cout << nI1.cross(rI1E) << std::endl;
-    J_R.col(0) << nI1;
-    J_R.col(1) << nI2;
-    J_R.col(2) << nI3;
-    J_R.col(3) << nI4;
-    J_R.col(4) << nI5;
-    J_R.col(5) << nI6;
+    J_R.col(0) << n_I_1;
+    J_R.col(1) << n_I_2;
+    J_R.col(2) << n_I_3;
+    J_R.col(3) << n_I_4;
+    J_R.col(4) << n_I_5;
+    J_R.col(5) << n_I_6;
     
     /*
     J_P.col(0) << n_I_1.cross(r_I_IE-r_I_I1);
@@ -578,12 +581,84 @@ MatrixXd jointToRotJac(VectorXd q)
     J_P.col(5) << n_I_6.cross(r_I_IE-r_I_I6);
     */
     
-    std::cout << "Test, JR:" << std::endl << J_R << std::endl;
+    //std::cout << "Test, JR:" << std::endl << J_R << std::endl;
 
     return J_R;
 }
 
+MatrixXd pseudoInverseMat(MatrixXd A, double lambda = 0)
+{
+    // Input: Any m-by-n matrix
+    // Output: An n-by-m pseudo-inverse of the input according to the Moore-Penrose formula
+    MatrixXd pinvA;
 
+    // In this tutorial, i assumed that rank of the Jacobian is full-rank.
+
+    // 1. The input matrix A is m*n matrix. compare m with n.
+    unsigned int m = A.rows();
+    unsigned int n = A.cols();
+    
+    
+    //typedef Matrix<double, 3, 3>  MatrixMxN;
+   // Eigen::FullPivLU<MatrixMxN> lu(A);
+    
+    MatrixXd transposeA = A.transpose();
+    MatrixXd temp;
+    
+    
+    //identityMat = Identity(n);
+    
+    // 2. when m >= n and rank(A) = n, left pseudo-inverse pinvA should be:
+    if(m >= n){
+    
+        //MatrixXd identityMat(n,n);
+        //identityMat = MatrixXd::Identity(n,n);
+        
+        //temp = transposeA * A + lambda*lambda*identityMat;
+        temp = transposeA * A + lambda*lambda*(MatrixXd::Identity(n,n));
+        pinvA = temp.inverse() * transposeA;
+    }
+    
+    // 3. when n > m and rank(A) = m, right pseudo-inverse pinA should be: 
+    else{
+        temp = A * transposeA + lambda*lambda*(MatrixXd::Identity(m,m));
+        pinvA = transposeA * temp.inverse();
+    }
+    
+    return pinvA;
+}
+
+VectorXd rotMatToRotVec(MatrixXd C)
+{
+    // Input: a rotation matrix C
+    // Output: the rotational vector which describes the rotation C
+    Vector3d phi,n;
+    double th;
+    
+    th = acos((C(0,0)+C(1,1)+C(2,2)-1)/2);
+    
+    if(fabs(th)<0.001){
+         n << 0,0,0;
+    }
+    else{
+        n << 1/(2*sin(th))*(C(2,1)-C(1,2)),
+             1/(2*sin(th))*(C(0,2)-C(2,0)),   
+             1/(2*sin(th))*(C(1,0)-C(0,1));
+    }
+        
+    phi = th*n;
+    
+   
+    return phi;
+}
+
+MatrixXd jointToGeoJac(VectorXd q)
+{
+    MatrixXd Jacobian = MatrixXd::Zero(6,6);
+    Jacobian << jointToPosJac(q), jointToRotJac(q);
+
+    return Jacobian;
+}
 
 //* Preparing RobotControl Practice
 void Practice()
@@ -681,9 +756,35 @@ void gazebo::rok3_plugin::Load(physics::ModelPtr _model, sdf::ElementPtr /*_sdf*
     double deg2rad = PI / 180;
     double rad2deg = 180 / PI;
     q << 10*deg2rad, 20*deg2rad, 30*deg2rad, 40*deg2rad, 50*deg2rad, 60*deg2rad;
+    //q << 0*deg2rad, 0*deg2rad, 60*deg2rad, 0*deg2rad, 0*deg2rad, 0*deg2rad;
     
-    jointToPosJac(q);
-    jointToRotJac(q);
+    //jointToPosJac(q);
+    //jointToRotJac(q);
+    
+    
+    /*MatrixXd tempMat(4,3);
+    tempMat << 1,2,4,
+               2,3,9,
+               2,6,-3,
+               3,-1,-10;
+    */
+    
+    // Tutorial 4: pseudo-inverse jacobian & Rotation vector from the angle axis.    
+    std::cout << "geometric Jacobian: " << jointToGeoJac(q) << std::endl;
+    
+    MatrixXd pinvJ = pseudoInverseMat(jointToGeoJac(q));
+    
+    std::cout << "pseudo-inverse Jacobian pinvJ:  "<< pinvJ << std::endl;
+    
+    
+    MatrixXd C_des  = jointToRotMat(q);
+    VectorXd q_init = q * 0.5;
+    MatrixXd C_init = jointToRotMat(q_init);
+    
+    MatrixXd C_err = C_des * C_init.transpose();
+    Vector3d dph = rotMatToRotVec(C_err);
+    
+    std::cout << "dph: " << dph << std::endl;
 
 }
 
