@@ -58,7 +58,6 @@ using namespace RigidBodyDynamics::Math;
 
 using namespace std;
 
-
 //Global parameters *WsJi*
 /*
  VectorXd q(6);
@@ -68,16 +67,69 @@ using namespace std;
     q << 10*D2R, 20*D2R, 30*D2R, 40*D2R, 50*D2R, 60*D2R;
  */
 
-VectorXd q_left_des(6), r_left_des(3), r_left_init(3), r_left_prev(3);
-MatrixXd C_left_des(3,3);
+VectorXd q_left_des(6), r_left_des(3), r_left_init(3), r_left_prev(3), r_left_home(3), r_right_home(3);
+VectorXd q_right_des(6), r_right_des(3), r_right_init(3), r_right_prev(3);
+
+MatrixXd C_left_des(3,3), C_right_des(3,3);
 double ori_left_des[3] = {0., 0., 0.};
 double ori_left_prev[3] = {0., 0., 0.};
+double ori_right_des[3] = {0., 0., 0.};
+double ori_right_prev[3] = {0., 0., 0.};
+
 
 double myTemp = 1.;
 double prev_time = 0.;
 
 int practice6_subQuestion = 3;  // 0 to 3: Practice 6-0 to 3.
 
+bool walk_ready_posture = false;
+bool walk_start_or_finish = false;
+
+bool walk_stop = false;
+bool walk_start = false;
+
+double t_num = 0.; // 
+//double swing_period = 1.0;  // [s]
+
+double time_walkready = 5.;
+
+
+double swing_height = 0.2;
+double swing_length = 0.;
+//double swing_height = 0.;
+
+double swing_length_yaxis = 0.12;
+
+//double swing_period = 2.0;  // [s]
+//double walk_ready_height = 0.2;  // 0.3912
+//double CoM_x_dist = 0.05;
+
+double swing_period = 2.0;  // [s]
+//double CoM_x_dist = 0.05;
+double CoM_x_dist = 0.07;
+//double CoM_x_dist = 0.08;
+double walk_ready_height = 0.2;  // 0.3912
+
+//walk_ready_height = 0.2;
+
+
+enum
+{
+    LEFT_SWING_UP = 0, LEFT_SWING_DOWN, RIGHT_SWING_UP, RIGHT_SWING_DOWN, COM_MOVE_LEFT, COM_MOVE_RIGHT, STOP_MOVING, TURN_RIGHT
+};
+
+enum
+{
+    TURN_RIGHT_PHASE1 = 0, TURN_RIGHT_PHASE2, TURN_RIGHT_PHASE3, TURN_RIGHT_PHASE4,
+    TURN_RIGHT_PHASE5, TURN_RIGHT_PHASE6, TURN_RIGHT_PHASE7, TURN_RIGHT_PHASE8
+};
+
+unsigned int leg_phase = COM_MOVE_RIGHT;
+
+//unsigned int leg_phase = TURN_RIGHT;
+unsigned int turn_phase = TURN_RIGHT_PHASE1;
+double turn_theta = 0.;
+std::string myOrder = "straight";
 
 namespace gazebo
 {
@@ -90,8 +142,7 @@ namespace gazebo
         event::ConnectionPtr update_connection;
         double dt;
         double time = 0;
-               
-        
+
         //* Model & Link & Joint Typedefs
         physics::ModelPtr model;
 
@@ -158,6 +209,9 @@ namespace gazebo
     };
     GZ_REGISTER_MODEL_PLUGIN(rok3_plugin);
 }
+
+//
+
 //* getTransformIo()
 MatrixXd getTransformI0()
 {
@@ -196,21 +250,32 @@ MatrixXd getTransform3E()
 }
  * */
 
-MatrixXd jointToTransform01(VectorXd q) // Hip Yaw
+MatrixXd jointToTransform01(VectorXd q, std::string dir = "left") // Hip Yaw
 {
     //* q: generalized coordinates. q = [q1; q2; q3];
     MatrixXd tmp_m(4,4);
     double tmp_q = q(0);
     
-    tmp_m << cos(tmp_q), -sin(tmp_q), 0, 0, \
-             sin(tmp_q), cos(tmp_q), 0, 0.105, \
-             0, 0, 1, -0.1512, \
-             0, 0, 0, 1;
+    std::string left_or_right = dir;
     
+    if(left_or_right == "left"){
+        tmp_m << cos(tmp_q), -sin(tmp_q), 0, 0, \
+                 sin(tmp_q), cos(tmp_q), 0, 0.105, \
+                 0, 0, 1, -0.1512, \
+                 0, 0, 0, 1;
+    }
     
+    else if(left_or_right == "right"){
+        tmp_m << cos(tmp_q), -sin(tmp_q), 0, 0, \
+                 sin(tmp_q), cos(tmp_q), 0, -0.105, \
+                 0, 0, 1, -0.1512, \
+                 0, 0, 0, 1;
+    }
     
+    else{
+        std::cout << "wrong direction. just use left or right." << std::endl;
+    }
        
-    
     return tmp_m;
 }
 
@@ -322,7 +387,7 @@ MatrixXd getTransform6E() // Ankle Roll
 
 
 
-VectorXd jointToPosition(VectorXd q)
+VectorXd jointToPosition(VectorXd q, std::string dir = "left")
 {
     MatrixXd tmp_m(4,4);
     Vector3d tmp_p;
@@ -330,7 +395,7 @@ VectorXd jointToPosition(VectorXd q)
     MatrixXd TI0(4,4), T01(4,4), T12(4,4), T23(4,4), T34(4,4), T45(4,4), T56(4,4), T6E(4,4);
     
     TI0 = getTransformI0();
-    T01 = jointToTransform01(q);
+    T01 = jointToTransform01(q, dir);
     T12 = jointToTransform12(q);
     T23 = jointToTransform23(q);
     T34 = jointToTransform34(q);
@@ -347,7 +412,7 @@ VectorXd jointToPosition(VectorXd q)
     
 }
 
-MatrixXd jointToRotMat(VectorXd q)
+MatrixXd jointToRotMat(VectorXd q, std::string dir = "left")
 {
     MatrixXd tmp_m(4,4);
     MatrixXd tmp_return(3,3);
@@ -355,7 +420,7 @@ MatrixXd jointToRotMat(VectorXd q)
     MatrixXd TI0(4,4), T01(4,4), T12(4,4), T23(4,4), T34(4,4), T45(4,4), T56(4,4), T6E(4,4);
     
     TI0 = getTransformI0();
-    T01 = jointToTransform01(q);
+    T01 = jointToTransform01(q, dir);
     T12 = jointToTransform12(q);
     T23 = jointToTransform23(q);
     T34 = jointToTransform34(q);
@@ -381,7 +446,7 @@ VectorXd rotToEuler(MatrixXd rotMat)
 }
 
 // 220502 practice: Geometric Jacobian Programming
-MatrixXd jointToPosJac(VectorXd q)
+MatrixXd jointToPosJac(VectorXd q, std::string dir = "left")
 {
     // Input: vector of generalized coordinates (joint angles)
     // Output: J_P, Jacobian of the end-effector translation which maps joint velocities to end-effector linear velocities in I frame.
@@ -398,7 +463,7 @@ MatrixXd jointToPosJac(VectorXd q)
 
     //* Compute the relative homogeneous transformation matrices.
     T_I0 = getTransformI0();
-    T_01 = jointToTransform01(q);
+    T_01 = jointToTransform01(q, dir);
     T_12 = jointToTransform12(q);
     T_23 = jointToTransform23(q);
     T_34 = jointToTransform34(q);
@@ -517,7 +582,7 @@ MatrixXd jointToPosJac(VectorXd q)
     return J_P;
 }
 
-MatrixXd jointToRotJac(VectorXd q)
+MatrixXd jointToRotJac(VectorXd q, std::string dir = "left")
 {
     // Input: vector of generalized coordinates (joint angles)
     // Output: J_P, Jacobian of the end-effector translation which maps joint velocities to end-effector linear velocities in I frame.
@@ -534,7 +599,7 @@ MatrixXd jointToRotJac(VectorXd q)
 
     //* Compute the relative homogeneous transformation matrices.
     T_I0 = getTransformI0();
-    T_01 = jointToTransform01(q);
+    T_01 = jointToTransform01(q, dir);
     T_12 = jointToTransform12(q);
     T_23 = jointToTransform23(q);
     T_34 = jointToTransform34(q);
@@ -707,7 +772,7 @@ MatrixXd jointToGeoJac(VectorXd q)
     return Jacobian;
 }
 
-VectorXd inverseKinematics(Vector3d r_des, MatrixXd C_des, VectorXd q0, double tol)
+VectorXd inverseKinematics(Vector3d r_des, MatrixXd C_des, VectorXd q0, double tol, std::string dir = "left")
 {
     // Input: desired end-effector position, desired end-effector orientation, initial guess for joint angles, threshold for the stopping-criterion
     // Output: joint angles which match desired end-effector position and orientation
@@ -723,7 +788,7 @@ VectorXd inverseKinematics(Vector3d r_des, MatrixXd C_des, VectorXd q0, double t
     //* Initialize the solution with the initial guess
     
     MatrixXd T_I0 = getTransformI0();
-    MatrixXd T_01 = jointToTransform01(q);
+    MatrixXd T_01 = jointToTransform01(q, dir);
     MatrixXd T_12 = jointToTransform12(q);
     MatrixXd T_23 = jointToTransform23(q);
     MatrixXd T_34 = jointToTransform34(q);
@@ -742,7 +807,7 @@ VectorXd inverseKinematics(Vector3d r_des, MatrixXd C_des, VectorXd q0, double t
     lambda = 0.01;
     
     //* Initialize error
-    dr = r_des -  jointToPosition(q);
+    dr = r_des -  jointToPosition(q, dir);
     dph = rotMatToRotVec(C_err) ;
     dXe << dr(0), dr(1), dr(2), dph(0), dph(1), dph(2);
     
@@ -755,8 +820,8 @@ VectorXd inverseKinematics(Vector3d r_des, MatrixXd C_des, VectorXd q0, double t
     {
         
         //Compute Inverse Jacobian
-        J_P = jointToPosJac(q);
-        J_R = jointToRotJac(q);
+        J_P = jointToPosJac(q, dir);
+        J_R = jointToRotJac(q, dir);
 
         J.block(0,0,3,6) = J_P;
         J.block(3,0,3,6) = J_R; // Geometric Jacobian
@@ -770,7 +835,7 @@ VectorXd inverseKinematics(Vector3d r_des, MatrixXd C_des, VectorXd q0, double t
         // Update error
         
         T_I0 = getTransformI0();
-        T_01 = jointToTransform01(q);
+        T_01 = jointToTransform01(q, dir);
         T_12 = jointToTransform12(q);
         T_23 = jointToTransform23(q);
         T_34 = jointToTransform34(q);
@@ -783,7 +848,7 @@ VectorXd inverseKinematics(Vector3d r_des, MatrixXd C_des, VectorXd q0, double t
         C_IE = (T_I0*T_01*T_12*T_23*T_34*T_45*T_56*T_6E).block(0,0,3,3);
         C_err = C_des * C_IE.transpose();
         
-        dr = r_des -  jointToPosition(q);
+        dr = r_des -  jointToPosition(q, dir);
         dph = rotMatToRotVec(C_err) ;
         dXe << dr(0), dr(1), dr(2), dph(0), dph(1), dph(2);
         
@@ -896,13 +961,14 @@ void Practice()
 
 }
 
+//
+
 
 void gazebo::rok3_plugin::Load(physics::ModelPtr _model, sdf::ElementPtr /*_sdf*/)
 {
     /*
      * Loading model data and initializing the system before simulation 
      */
-    
 
     //* model.sdf file based model data input to [physics::ModelPtr model] for gazebo simulation
     model = _model;
@@ -919,11 +985,7 @@ void gazebo::rok3_plugin::Load(physics::ModelPtr _model, sdf::ElementPtr /*_sdf*
 
     //* model.urdf file based model data input to [Model* rok3_model] for using RBDL
     Model* rok3_model = new Model();
-    
-    // Path for Laptop
     Addons::URDFReadFromFile("/home/wonsukji/.gazebo/models/rok3_model/urdf/rok3_model.urdf", rok3_model, true, true);
-    
-    // Path for HomePC
     //Addons::URDFReadFromFile("/home/wonsukjihomepc/.gazebo/models/rok3_model/urdf/rok3_model.urdf", rok3_model, true, true);
     //↑↑↑ Check File Path ↑↑↑
     nDoF = rok3_model->dof_count - 6; // Get degrees of freedom, except position and orientation of the robot
@@ -935,16 +997,30 @@ void gazebo::rok3_plugin::Load(physics::ModelPtr _model, sdf::ElementPtr /*_sdf*
 
 
     //* setting for getting dt
-    last_update_time = model->GetWorld()->GetSimTime();
+    #if GAZEBO_MAJOR_VERSION >= 8
+        last_update_time = model->GetWorld()->SimTime();
+    #else
+        last_update_time = model->GetWorld()->GetSimTime();
+    #endif
     update_connection = event::Events::ConnectWorldUpdateBegin(boost::bind(&rok3_plugin::UpdateAlgorithm, this));
     
     //** Init time
-    q_left_des << 0, 0, -0.05, 0.1, -0.05, 0;
-    r_left_des = jointToPosition(q_left_des);
+    q_left_des << 0, 0, 0, 0, 0, 0;
+    //r_left_des = jointToPosition(q_left_des);
+    r_left_des = jointToPosition(q_left_des, "left");
     r_left_init = r_left_des;
     
+    q_right_des << 0, 0, 0, 0, 0, 0;
+    //r_left_des = jointToPosition(q_left_des);
+    r_right_des = jointToPosition(q_right_des, "right");
+    r_right_init = r_right_des;
+    
+    
     std::cout << "r_left_init: \n" << r_left_init << std::endl;
+    std::cout << "r_right_init: \n" << r_right_init << std::endl;
+    
     C_left_des = MatrixXd::Identity(3,3);
+    C_right_des = MatrixXd::Identity(3,3);
     
     /*VectorXd q(6);
     //
@@ -966,7 +1042,13 @@ void gazebo::rok3_plugin::UpdateAlgorithm()
      */
 
     //* UPDATE TIME : 1ms
-    common::Time current_time = model->GetWorld()->GetSimTime();
+    //common::Time current_time = model->GetWorld()->GetSimTime();
+    #if GAZEBO_MAJOR_VERSION >= 8
+        common::Time current_time = model->GetWorld()->SimTime();
+    #else
+        common::Time current_time = model->GetWorld()->GetSimTime();
+    #endif    
+    
     dt = current_time.Double() - last_update_time.Double();
     //    cout << "dt:" << dt << endl;
     time = time + dt;
@@ -979,17 +1061,10 @@ void gazebo::rok3_plugin::UpdateAlgorithm()
     //* Read Sensors data
     GetjointData();
     
-    //* Target Angles (Trajectories)
-    /*
-     enum
-        {
-            WST = 0, LHY, LHR, LHP, LKN, LAP, LAR, RHY, RHR, RHP, RKN, RAP, RAR
-        };
-     */
-    
-    
-    
+    //
     //* Algorithm loop
+//start of practice 6
+#if 0
     switch(practice6_subQuestion){
         case 0:
             if(time <= 5.){
@@ -1056,7 +1131,7 @@ void gazebo::rok3_plugin::UpdateAlgorithm()
             if(time <= 5.){
                 //r_left_des(2) = func_1_cos(time, r_left_init(2), r_left_init(2)+0.3912, 5.);
                 r_left_des(2) = func_1_cos(time, r_left_init(2), r_left_init(2)+0.2, 5.);
-                q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001, "right");
 
                 //myTemp = func_1_cos(time, 1., 7., 5.);        
 
@@ -1070,7 +1145,7 @@ void gazebo::rok3_plugin::UpdateAlgorithm()
             else if(time <= 10.){
                 ori_left_des[2] = func_1_cos(time-prev_time, ori_left_prev[2], ori_left_prev[2]+(90.*D2R), 5.);
                 C_left_des = rot_z(ori_left_des[2]);
-                q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001, "right");
 
                 if(time == 10.){
                     prev_time = time;
@@ -1083,6 +1158,718 @@ void gazebo::rok3_plugin::UpdateAlgorithm()
         
         
     }
+    
+    // end of Practice 6
+#endif
+
+    // start of Practice 7
+    if(!walk_ready_posture){
+        if(time <= time_walkready){
+            //r_left_des(2) = func_1_cos(time, r_left_init(2), r_left_init(2)+0.3912, 5.);
+            
+            
+            /*r_left_des(2) = func_1_cos(time, r_left_init(2), r_left_init(2)+walk_ready_height, time_walkready);
+            q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+            
+            r_right_des(2) = func_1_cos(time, r_right_init(2), r_right_init(2)+walk_ready_height, time_walkready);
+            q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");*/
+            
+            q_left_des(0) = 0;
+            q_left_des(1) = 0;
+            q_left_des(2) = func_1_cos(time, 0, -30.*D2R, time_walkready);
+            q_left_des(3) = func_1_cos(time, 0, 60.*D2R, time_walkready);
+            q_left_des(4) = func_1_cos(time, 0, -30.*D2R, time_walkready);
+            q_left_des(5) = 0;
+            
+            q_right_des(0) = 0;
+            q_right_des(1) = 0;
+            q_right_des(2) = func_1_cos(time, 0, -30.*D2R, time_walkready);
+            q_right_des(3) = func_1_cos(time, 0, 60.*D2R, time_walkready);
+            q_right_des(4) = func_1_cos(time, 0, -30.*D2R, time_walkready);
+            q_right_des(5) = 0;
+            //q_left_des << 0, 0, -0.05, 0.1, -0.05, 0;
+            
+            r_left_des = jointToPosition(q_left_des, "left");
+            r_right_des = jointToPosition(q_right_des, "right");
+
+            //myTemp = func_1_cos(time, 1., 7., 5.);        
+
+            /*if(time == 1. || time == 2. || time == 3. || time == 4. || time == 5. ){
+                r_left_prev = r_left_des;
+                r_right_prev = r_right_des;
+                //std::cout << "time: " << time << "\nmyTemp:" << myTemp << std::endl;
+                prev_time = time;
+                if(time >= time_walkready){
+                    r_left_prev = r_left_des;
+                    r_right_prev = r_right_des;
+                    prev_time = time;
+                    walk_ready_posture = 1;
+                }
+            }*/
+            
+            
+            if(time >= time_walkready){
+                r_left_prev = r_left_des;
+                r_right_prev = r_right_des;
+                prev_time = time;
+                walk_ready_posture = true;
+                
+                r_left_home = r_left_des;
+                r_right_home = r_right_des;
+            }
+        }
+    }
+
+    // walk ready!!
+    else{
+                
+        // Joystick
+        if(time == 23.){
+            walk_stop = true;
+            
+        }
+        
+        else if(time == 35.){
+            //leg_phase = COM_MOVE_RIGHT;
+            walk_start = true;
+            //leg_phase = TURN_RIGHT;
+            myOrder = "turn";
+            
+        }
+        
+        else if(time == 53.){
+            walk_start = true;
+            myOrder = "straight";
+        }
+        
+        if(time == 65.){
+            walk_stop = true;
+        }
+        
+        
+        
+        switch(leg_phase){
+            
+            
+            
+            case LEFT_SWING_UP:
+                
+                // CoM_x_dist
+                // swing_length
+                std::cout << "case: LEFT_SWING_UP" << std::endl;                
+                
+                if(time <= swing_period * (t_num+1.) + time_walkready){
+                    
+                    if(!walk_start_or_finish){
+                        swing_length = 0.5*CoM_x_dist;
+                        
+                        r_left_des(2) = func_1_cos(time-prev_time, r_left_prev(2), r_left_prev(2)+swing_height, swing_period);                      
+                        
+                        r_left_des(0) = func_1_cos(time-prev_time, r_left_prev(0), r_left_prev(0)+swing_length, swing_period);                      
+                        
+                        
+                        r_right_des(0) = func_1_cos(time-prev_time, r_right_prev(0), r_right_prev(0)-swing_length, swing_period);                      
+                        
+                    }
+                    
+                    else{
+                        swing_length = CoM_x_dist;
+                        /*r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)+2*swing_length_yaxis, swing_period);
+                        q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                       
+                        r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_prev(1)+2*swing_length_yaxis, swing_period);
+                        q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");*/
+                        
+                        r_left_des(2) = func_1_cos(time-prev_time, r_left_prev(2), r_left_prev(2)+swing_height, swing_period);
+                        
+                        r_left_des(0) = func_1_cos(time-prev_time, r_left_prev(0), r_left_prev(0)+swing_length, swing_period);                      
+                        r_right_des(0) = func_1_cos(time-prev_time, r_right_prev(0), r_right_prev(0)-swing_length, swing_period);
+                    }
+                    
+                    q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                    q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+                    
+                    if(time == swing_period * (t_num+1.) + time_walkready){
+                            leg_phase = LEFT_SWING_DOWN;
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;
+                            
+                            
+                    }
+                }
+                
+                
+                break;
+                
+            case LEFT_SWING_DOWN:
+                std::cout << "case: LEFT_SWING_DOWN" << std::endl;                
+                
+                if(time <= swing_period * (t_num+1.) + time_walkready){
+                    
+                    
+                    if(!walk_start_or_finish){
+                        swing_length = 0.5*CoM_x_dist;
+                        
+                        r_left_des(2) = func_1_cos(time-prev_time, r_left_prev(2), r_left_prev(2)-swing_height, swing_period);
+                        
+                        r_left_des(0) = func_1_cos(time-prev_time, r_left_prev(0), r_left_prev(0)+swing_length, swing_period);                      
+                        r_right_des(0) = func_1_cos(time-prev_time, r_right_prev(0), r_right_prev(0)-swing_length, swing_period);
+                        
+                    }
+                    
+                    else{                        
+                        swing_length = CoM_x_dist;
+                        
+                        r_left_des(2) = func_1_cos(time-prev_time, r_left_prev(2), r_left_prev(2)-swing_height, swing_period);
+                        
+                        r_left_des(0) = func_1_cos(time-prev_time, r_left_prev(0), r_left_prev(0)+swing_length, swing_period);                      
+                        r_right_des(0) = func_1_cos(time-prev_time, r_right_prev(0), r_right_prev(0)-swing_length, swing_period);
+                        
+                    }
+                    
+                    q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                    q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+                    
+                    if(time == swing_period * (t_num+1.) + time_walkready){
+                        
+                        if(walk_stop == false){
+                            leg_phase = COM_MOVE_LEFT;
+                            
+                            if(!walk_start_or_finish){
+                            walk_start_or_finish = true;
+                        }
+                            
+                        }
+                        else{
+                            if(walk_start_or_finish){
+                                walk_start_or_finish = false;
+                                leg_phase = COM_MOVE_LEFT;
+                            }
+                            else{
+                                leg_phase = STOP_MOVING;                                
+                            }
+                        }
+                        
+                        t_num++;
+                        
+                        r_left_prev = r_left_des;
+                        r_right_prev = r_right_des;
+                        prev_time = time;
+                        
+                        std::cout << "time: " << time << std::endl;
+                        std::cout << "t_num: " << t_num << std::endl;
+                        std::cout << "time_walkready: " << time_walkready << "\n" << std::endl;
+                        
+                        
+                    }
+                }
+                
+                
+                
+                break;
+                
+            // Right leg
+            case RIGHT_SWING_UP:
+                // Original
+                std::cout << "case: RIGHT_SWING_UP" << std::endl;                
+                                             
+                if(time <= swing_period * (t_num+1.) + time_walkready){
+                    
+                    
+                    
+                    if(!walk_start_or_finish){
+                        swing_length = 0.5*CoM_x_dist;
+                        
+                        r_right_des(2) = func_1_cos(time-prev_time, r_right_prev(2), r_right_prev(2)+swing_height, swing_period);
+                        
+                        r_left_des(0) = func_1_cos(time-prev_time, r_left_prev(0), r_left_prev(0)-swing_length, swing_period);                      
+                        r_right_des(0) = func_1_cos(time-prev_time, r_right_prev(0), r_right_prev(0)+swing_length, swing_period);
+                        
+                    }
+                    
+                    else{
+                        swing_length = CoM_x_dist;
+                        
+                        r_right_des(2) = func_1_cos(time-prev_time, r_right_prev(2), r_right_prev(2)+swing_height, swing_period);
+                        
+                        r_left_des(0) = func_1_cos(time-prev_time, r_left_prev(0), r_left_prev(0)-swing_length, swing_period);                      
+                        r_right_des(0) = func_1_cos(time-prev_time, r_right_prev(0), r_right_prev(0)+swing_length, swing_period);
+                        
+                        
+                    }
+                    
+                    q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                    q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+                    
+                    if(time == swing_period * (t_num+1.) + time_walkready){
+                        leg_phase = RIGHT_SWING_DOWN; // original
+                        
+                        t_num++;
+                        
+                        r_left_prev = r_left_des;
+                        r_right_prev = r_right_des;
+                        prev_time = time;
+                        
+                        
+                    }
+                }
+                
+                
+                
+                break;
+                
+            case RIGHT_SWING_DOWN:
+                
+                std::cout << "case: RIGHT_SWING_DOWN" << std::endl;                
+                                
+                if(time <= swing_period * (t_num+1.) + time_walkready){
+                    
+                    
+                    if(!walk_start_or_finish){
+                        swing_length = 0.5*CoM_x_dist;
+                        
+                        r_right_des(2) = func_1_cos(time-prev_time, r_right_prev(2), r_right_prev(2)-swing_height, swing_period);
+                        
+                        r_left_des(0) = func_1_cos(time-prev_time, r_left_prev(0), r_left_prev(0)-swing_length, swing_period);                      
+                        r_right_des(0) = func_1_cos(time-prev_time, r_right_prev(0), r_right_prev(0)+swing_length, swing_period);
+                        
+                        
+                    }
+                    else{
+                        swing_length = CoM_x_dist;
+                        
+                        r_right_des(2) = func_1_cos(time-prev_time, r_right_prev(2), r_right_prev(2)-swing_height, swing_period);
+                        
+                        r_left_des(0) = func_1_cos(time-prev_time, r_left_prev(0), r_left_prev(0)-swing_length, swing_period);                      
+                        r_right_des(0) = func_1_cos(time-prev_time, r_right_prev(0), r_right_prev(0)+swing_length, swing_period);
+                        
+                        
+                    }
+                    
+                    q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                    q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+                    
+                    if(time == swing_period * (t_num+1.) + time_walkready){
+                        //leg_phase = LEFT_SWING_UP; // original
+                        
+                        if(walk_stop == false){
+                            leg_phase = COM_MOVE_RIGHT;
+                            
+                            if(!walk_start_or_finish){
+                            walk_start_or_finish = true;
+                        }
+                            
+                        }
+                        else{
+                            if(walk_start_or_finish){
+                                walk_start_or_finish = false;
+                                leg_phase = COM_MOVE_RIGHT;
+                            }
+                            else{
+                                leg_phase = STOP_MOVING;                                
+                            }
+                        }
+                        t_num++;
+                        
+                        r_left_prev = r_left_des;
+                        r_right_prev = r_right_des;
+                        prev_time = time;
+                        
+                        /*if(!walk_start_or_finish){
+                            walk_start_or_finish = true;
+                        }*/
+                    }
+                }
+                
+                break;
+                
+                
+                
+                
+            case COM_MOVE_RIGHT:
+                std::cout << "case: COM_MOVE_RIGHT" << std::endl;                
+                                                
+                if(time <= swing_period * (t_num+1.) + time_walkready){
+                    
+                    if(!walk_start_or_finish){
+                        if(!walk_stop){
+                            r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)+swing_length_yaxis, swing_period);                        
+                            r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_prev(1)+swing_length_yaxis, swing_period);
+                        }
+                        else{
+                            r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)+2*swing_length_yaxis, swing_period);
+                            r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_prev(1)+2*swing_length_yaxis, swing_period);
+                        
+                        }   
+                        
+                    }
+                    
+                    else{
+                        r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)+2*swing_length_yaxis, swing_period);
+                       
+                        r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_prev(1)+2*swing_length_yaxis, swing_period);
+                        
+                    }
+                    
+                    q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                    q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+                    
+                    
+                    if(time == swing_period * (t_num+1.) + time_walkready){
+                            leg_phase = LEFT_SWING_UP;
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;                            
+                            
+                    }
+                }
+                
+                
+                break;
+                
+                
+                
+            case COM_MOVE_LEFT:
+                std::cout << "case: COM_MOVE_LEFT" << std::endl;                
+                                                
+                if(time <= swing_period * (t_num+1.) + time_walkready){
+                    
+                    if(!walk_start_or_finish){
+                        if(!walk_stop){
+                            r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)-swing_length_yaxis, swing_period);
+                            r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_prev(1)-swing_length_yaxis, swing_period);
+                        }
+                        else{
+                            r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)-2*swing_length_yaxis, swing_period);
+                            r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_prev(1)-2*swing_length_yaxis, swing_period);
+                        
+                        }                        
+                        
+                    }
+                    
+                    else{
+                        r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)-2*swing_length_yaxis, swing_period);
+                        
+                       
+                        r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_prev(1)-2*swing_length_yaxis, swing_period);
+                        
+                        
+                    }
+                    
+                    q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                    q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+                    
+                    if(time == swing_period * (t_num+1.) + time_walkready){
+                            leg_phase = RIGHT_SWING_UP;
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;                            
+                            
+                    }
+                }
+                
+                
+                break;
+                
+                
+            case STOP_MOVING:
+                std::cout << "case: STOP_MOVING" << std::endl;                
+                if(time <= swing_period * (t_num+1.) + time_walkready){
+                    
+                    if(!walk_start_or_finish){
+                        //r_left_home
+                        r_left_des(0) = func_1_cos(time-prev_time, r_left_prev(0), r_left_home(0), swing_period);
+                        r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_home(1), swing_period);
+                        r_left_des(2) = func_1_cos(time-prev_time, r_left_prev(2), r_left_home(2), swing_period);
+                        r_right_des(0) = func_1_cos(time-prev_time, r_right_prev(0), r_right_home(0), swing_period);
+                        r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_home(1), swing_period);
+                        r_right_des(2) = func_1_cos(time-prev_time, r_right_prev(2), r_right_home(2), swing_period);
+                        
+                    }
+                    
+                    else{
+                        r_left_des(0) = func_1_cos(time-prev_time, r_left_prev(0), r_left_home(0), swing_period);
+                        r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_home(1), swing_period);
+                        r_left_des(2) = func_1_cos(time-prev_time, r_left_prev(2), r_left_home(2), swing_period);
+                        r_right_des(0) = func_1_cos(time-prev_time, r_right_prev(0), r_right_home(0), swing_period);
+                        r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_home(1), swing_period);
+                        r_right_des(2) = func_1_cos(time-prev_time, r_right_prev(2), r_right_home(2), swing_period);
+                        
+                    }
+                    
+                    q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                    q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+                    
+                    if(time == swing_period * (t_num+1.) + time_walkready){
+                            //leg_phase = RIGHT_SWING_UP;
+                        walk_stop = false;
+                        t_num++;
+
+                        r_left_prev = r_left_des;
+                        r_right_prev = r_right_des;
+                        prev_time = time;      
+                        
+                        if(walk_start){
+                            if(myOrder == "straight"){
+                                leg_phase = COM_MOVE_RIGHT;
+                                myOrder = "";
+                            }
+                            else if(myOrder == "turn"){
+                                leg_phase = TURN_RIGHT;
+                                myOrder = "";
+                            }
+                        }
+                            
+                    }
+                }
+                
+                
+                break;
+                
+            case TURN_RIGHT:
+                std::cout << "case: TURN RIGHT" << std::endl;
+                //TURN_RIGHT_PHASE1
+                
+                switch(turn_phase){
+                    case TURN_RIGHT_PHASE1:  // move com left
+                        //
+                        if(time <= swing_period * (t_num+1.) + time_walkready){                    
+                            r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)-0.105, swing_period);
+                            r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_prev(1)-0.105, swing_period);
+                        }
+
+                        q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                        q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+
+                        if(time == swing_period * (t_num+1.) + time_walkready){
+                                //leg_phase = RIGHT_SWING_UP;
+                            turn_phase = TURN_RIGHT_PHASE2;
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;                            
+                        }
+                        
+                        //                   
+                        break;
+                        
+                    case TURN_RIGHT_PHASE2: // up right leg and spin left leg ankle
+                        if(time <= swing_period * (t_num+1.) + time_walkready){                    
+                            //r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)-swing_length_yaxis, swing_period);
+                            r_right_des(2) = func_1_cos(time-prev_time, r_right_prev(2), r_right_prev(2)+0.1, swing_period);
+                            turn_theta = func_1_cos(time-prev_time, 0., 90.*D2R, swing_period);                            
+                            C_left_des = rot_z(turn_theta);
+                        }
+
+                        q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                        q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+
+                        if(time == swing_period * (t_num+1.) + time_walkready){
+                                //leg_phase = RIGHT_SWING_UP;
+                            turn_phase = TURN_RIGHT_PHASE3;
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;                            
+                        }
+                        
+                        break;
+                        
+                    case TURN_RIGHT_PHASE3: // down right leg with little -y distance
+                        
+                        if(time <= swing_period * (t_num+1.) + time_walkready){                    
+                            //r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)-swing_length_yaxis, swing_period);
+                            r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_prev(1)-0.05, swing_period);
+                            r_right_des(2) = func_1_cos(time-prev_time, r_right_prev(2), r_right_prev(2)-0.1, swing_period);
+                            //turn_theta = func_1_cos(time-prev_time, 0., -90.*D2R, swing_period);                            
+                            //C_left_des = rot_z(turn_theta);
+                        }
+
+                        q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                        q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+
+                        if(time == swing_period * (t_num+1.) + time_walkready){
+                                //leg_phase = RIGHT_SWING_UP;
+                            turn_phase = TURN_RIGHT_PHASE4;
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;                            
+                        }
+                        
+                        break;
+                                           
+                    case TURN_RIGHT_PHASE4: // move CoM to left
+                        
+                        if(time <= swing_period * (t_num+1.) + time_walkready){                    
+                            //r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)-swing_length_yaxis, swing_period);
+                            
+                            r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)+2*0.105+(0.05), swing_period);
+                            r_right_des(1) = func_1_cos(time-prev_time, r_right_prev(1), r_right_prev(1)+2*0.105+0.05+(0.05), swing_period);
+                            
+                            //r_right_des(2) = func_1_cos(time-prev_time, r_right_prev(2), r_right_prev(2)-0.1, swing_period);
+                            //turn_theta = func_1_cos(time-prev_time, 0., -90.*D2R, swing_period);                            
+                            //C_left_des = rot_z(turn_theta);
+                        }
+
+                        q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                        q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+
+                        if(time == swing_period * (t_num+1.) + time_walkready){
+                                //leg_phase = RIGHT_SWING_UP;
+                            turn_phase = TURN_RIGHT_PHASE5;
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;                            
+                        }
+                        
+                        break;   
+                    
+                    case TURN_RIGHT_PHASE5: // up left leg
+                        
+                        if(time <= swing_period * (t_num+1.) + time_walkready){                    
+                            //r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)-swing_length_yaxis, swing_period);
+                            
+                            r_left_des(2) = func_1_cos(time-prev_time, r_left_prev(2), r_left_prev(2)+0.1, swing_period);
+                            
+                            /*if(time >= swing_period * (t_num) + time_walkready + 0.5)
+                            {
+                                turn_theta = func_1_cos(time-prev_time, 90.*D2R, 0.*D2R, swing_period-0.5);
+                                C_left_des = rot_z(turn_theta);
+                            }*/
+                                
+                            //r_right_des(2) = func_1_cos(time-prev_time, r_right_prev(2), r_right_prev(2)-0.1, swing_period);
+                            //turn_theta = func_1_cos(time-prev_time, 0., -90.*D2R, swing_period);                            
+                            //C_left_des = rot_z(turn_theta);
+                        }
+
+                        q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                        q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+
+                        if(time == swing_period * (t_num+1.) + time_walkready){
+                                //leg_phase = RIGHT_SWING_UP;
+                            turn_phase = TURN_RIGHT_PHASE6;
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;                            
+                        }
+                        
+                        break;
+                        
+                        
+                    case TURN_RIGHT_PHASE6: // spin left hip yaw
+                        
+                        if(time <= swing_period * (t_num+1.) + time_walkready){                    
+                            //r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)-swing_length_yaxis, swing_period);
+                            
+                            //r_left_des(2) = func_1_cos(time-prev_time, r_left_prev(2), r_left_prev(2)+0.1, swing_period);
+                            
+                            turn_theta = func_1_cos(time-prev_time, 90.*D2R, 0.*D2R, swing_period);
+                            C_left_des = rot_z(turn_theta);
+  
+                        }
+
+                        q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                        q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+
+                        if(time == swing_period * (t_num+1.) + time_walkready){
+                                //leg_phase = RIGHT_SWING_UP;
+                            turn_phase = TURN_RIGHT_PHASE7;
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;                            
+                        }
+                        
+                        break;   
+                    
+                    case TURN_RIGHT_PHASE7: // left leg down
+                        
+                        if(time <= swing_period * (t_num+1.) + time_walkready){                    
+                            r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_prev(1)+0.05, swing_period);                            
+                            r_left_des(2) = func_1_cos(time-prev_time, r_left_prev(2), r_left_home(2), swing_period);
+                            
+                           
+  
+                        }
+
+                        q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                        q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+
+                        if(time == swing_period * (t_num+1.) + time_walkready){
+                                //leg_phase = RIGHT_SWING_UP;
+                            turn_phase = TURN_RIGHT_PHASE8;
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;                            
+                        }
+                       
+                        break;
+                        
+                        
+                        
+                    case TURN_RIGHT_PHASE8: // finish
+                        
+                        
+                        if(time <= swing_period * (t_num+1.) + time_walkready){                    
+                            //r_left_des(1) = func_1_cos(time-prev_time, r_left_prev(1), r_left_home(1), swing_period);                            
+                            //r_left_des(2) = func_1_cos(time-prev_time, r_left_prev(2), r_left_home(2), swing_period);
+                            
+                            for(size_t i = 0; i < 3; ++i){
+                                r_left_des(i) = func_1_cos(time-prev_time, r_left_prev(i), r_left_home(i), swing_period);
+                                r_right_des(i) = func_1_cos(time-prev_time, r_right_prev(i), r_right_home(i), swing_period);
+                            }
+                            //turn_theta = func_1_cos(time-prev_time, 90.*D2R, 0.*D2R, swing_period);
+                            //C_left_des = rot_z(turn_theta);
+  
+                        }
+
+                        q_left_des = inverseKinematics(r_left_des, C_left_des, q_left_des, 0.001);
+                        q_right_des = inverseKinematics(r_right_des, C_right_des, q_right_des, 0.001, "right");
+
+                        if(time == swing_period * (t_num+1.) + time_walkready){
+                                //leg_phase = RIGHT_SWING_UP;
+                            turn_phase = TURN_RIGHT_PHASE1;
+                            
+                            leg_phase = STOP_MOVING;
+                            walk_stop = true;
+                            walk_start = false;
+                            //leg_phase = COM_MOVE_RIGHT;
+                            
+                            t_num++;
+
+                            r_left_prev = r_left_des;
+                            r_right_prev = r_right_des;
+                            prev_time = time;                            
+                        }
+                        
+                        break;    
+                }
+                
+                               
+                
+                break;
+        }
+        
+    }
+    
     /*
     if(time <= 5.){
         //r_left_des(2) = func_1_cos(time, r_left_init(2), r_left_init(2)+0.3912, 5.);
@@ -1132,10 +1919,14 @@ void gazebo::rok3_plugin::UpdateAlgorithm()
     joint[LAR].targetRadian = 60*3.14/180;*/
     for(size_t i = 0; i < 6; ++i){
         joint[i+1].targetRadian = q_left_des(i);
+        joint[i+1+6].targetRadian = q_right_des(i);
     }
+    //
     
-    
-    
+    /*if(static_cast<int>(time) % 1 == 0.){
+        std::cout << "r_left_des: " << r_left_des << std::endl; 
+        std::cout << "r_right_des: " << r_right_des << std::endl;
+    }*/
     
     //* Joint Controller
     jointController();
@@ -1204,6 +1995,27 @@ void gazebo::rok3_plugin::GetjointData()
      * encoder unit : [rad] and unit conversion to [deg]
      * velocity unit : [rad/s] and unit conversion to [rpm]
      */
+
+ #if GAZEBO_MAJOR_VERSION >= 8
+
+    
+    joint[LHY].actualRadian = L_Hip_yaw_joint->Position(0);
+    joint[LHR].actualRadian = L_Hip_roll_joint->Position(0);
+    joint[LHP].actualRadian = L_Hip_pitch_joint->Position(0);
+    joint[LKN].actualRadian = L_Knee_joint->Position(0);
+    joint[LAP].actualRadian = L_Ankle_pitch_joint->Position(0);
+    joint[LAR].actualRadian = L_Ankle_roll_joint->Position(0);
+
+    joint[RHY].actualRadian = R_Hip_yaw_joint->Position(0);
+    joint[RHR].actualRadian = R_Hip_roll_joint->Position(0);
+    joint[RHP].actualRadian = R_Hip_pitch_joint->Position(0);
+    joint[RKN].actualRadian = R_Knee_joint->Position(0);
+    joint[RAP].actualRadian = R_Ankle_pitch_joint->Position(0);
+    joint[RAR].actualRadian = R_Ankle_roll_joint->Position(0);
+
+    joint[WST].actualRadian = torso_joint->Position(0);
+    
+  #else
     joint[LHY].actualRadian = L_Hip_yaw_joint->GetAngle(0).Radian();
     joint[LHR].actualRadian = L_Hip_roll_joint->GetAngle(0).Radian();
     joint[LHP].actualRadian = L_Hip_pitch_joint->GetAngle(0).Radian();
@@ -1219,6 +2031,8 @@ void gazebo::rok3_plugin::GetjointData()
     joint[RAR].actualRadian = R_Ankle_roll_joint->GetAngle(0).Radian();
 
     joint[WST].actualRadian = torso_joint->GetAngle(0).Radian();
+  #endif
+
 
     for (int j = 0; j < nDoF; j++) {
         joint[j].actualDegree = joint[j].actualRadian*R2D;
@@ -1305,3 +2119,4 @@ void gazebo::rok3_plugin::SetJointPIDgain()
 
     joint[WST].Kd = 2.;
 }
+
